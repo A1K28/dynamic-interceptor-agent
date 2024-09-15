@@ -57,6 +57,12 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
 
     @Override
     public void mockMethodReturns(Method method, Object returnVal, Object... args) {
+        if (returnVal == null && isBoxedPrimitive(method.getReturnType())) {
+            log.warn("Using null return types for Boxed Primitives" +
+                    " will result in default primitive values instead of null returns");
+            returnVal = createNullValue(method.getReturnType());
+        }
+
         String classname = method.getDeclaringClass().getName();
         MockedMethodModel mockedMethodModel = new MockedMethodModel(method, returnVal, args);
         classToMockedMethodMap.compute(classname, (k,v) -> {
@@ -136,7 +142,7 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
     public static Object getMockedResult(Method method, Object[] args) throws Throwable {
         MockedMethodModel mockedMethodModel = getMockedModelForInterception(method, args)
                 .orElseThrow(() -> new IllegalStateException("Mocked method model not found."));
-        if (mockedMethodModel.getReturnVal() != null)
+        if (mockedMethodModel.getExceptionType() == null)
             return mockedMethodModel.getReturnVal();
         throw createThrowable(mockedMethodModel);
     }
@@ -187,7 +193,7 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
         if (type == short.class)
             return 0;
         if (type == char.class)
-            return '&';
+            return '\u0000';
         if (type == int.class)
             return 0;
         if (type == long.class)
@@ -197,6 +203,38 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
         if (type == double.class)
             return 0;
         return null;
+    }
+
+    // TODO: handle boxed primitives
+    private static Object createNullValue(Class<?> type) {
+        if (type == Boolean.class)
+            return false;
+        if (type == Byte.class)
+            return 0;
+        if (type == Short.class)
+            return 0;
+        if (type == Character.class)
+            return '\u0000';
+        if (type == Integer.class)
+            return 0;
+        if (type == Long.class)
+            return 0;
+        if (type == Float.class)
+            return 0;
+        if (type == Double.class)
+            return 0;
+        return null;
+    }
+
+    private static boolean isBoxedPrimitive(Class<?> type) {
+        return type == Boolean.class
+                || type == Byte.class
+                || type == Short.class
+                || type == Character.class
+                || type == Integer.class
+                || type == Long.class
+                || type == Float.class
+                || type == Double.class;
     }
 }
 
