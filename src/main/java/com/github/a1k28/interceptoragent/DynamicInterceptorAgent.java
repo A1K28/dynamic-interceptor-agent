@@ -58,8 +58,8 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
     @Override
     public void mockMethodReturns(Method method, Object returnVal, Object... args) {
         if (returnVal == null && isBoxedPrimitive(method.getReturnType())) {
-            log.warn("Using null return types for Boxed Primitives" +
-                    " will result in default primitive values instead of null returns");
+            log.warn("Using null return values for Boxed Primitives" +
+                    " will result in default primitive values instead of null returns!");
             returnVal = createNullValue(method.getReturnType());
         }
 
