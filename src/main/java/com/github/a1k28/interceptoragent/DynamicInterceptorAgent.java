@@ -91,12 +91,16 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
     }
 
     public static class MethodAdvice {
-
         @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class)
         static boolean onEnter(@Advice.Origin Method method,
-                               @Advice.AllArguments Object[] args) {
-            boolean shouldIntercept = getMockedModelForInterception(method, args).isPresent();
-            return shouldIntercept;
+                               @Advice.AllArguments Object[] args) throws Throwable {
+            Optional<MockedMethodModel> mockedMethodModel = getMockedModelForInterception(method, args);
+            if (mockedMethodModel.isPresent()) {
+                if (mockedMethodModel.get().getExceptionType() != null)
+                    throw createThrowable(mockedMethodModel.get());
+                return true;
+            }
+            return false;
         }
 
         @Advice.OnMethodExit
@@ -105,7 +109,11 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
                            @Advice.AllArguments Object[] args,
                            @Advice.Return(readOnly = false, typing = Assigner.Typing.DYNAMIC) Object returned) throws Throwable {
             if (intercepted) {
-                returned = getMockedResult(method, args);
+                Optional<MockedMethodModel> mockedMethodModel = getMockedModelForInterception(method, args);
+                if (mockedMethodModel.isPresent()) {
+                    if (mockedMethodModel.get().getExceptionType() == null)
+                        returned = mockedMethodModel.get().getReturnVal();
+                }
             }
         }
     }
@@ -139,14 +147,6 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
         return Optional.empty();
     }
 
-    public static Object getMockedResult(Method method, Object[] args) throws Throwable {
-        MockedMethodModel mockedMethodModel = getMockedModelForInterception(method, args)
-                .orElseThrow(() -> new IllegalStateException("Mocked method model not found."));
-        if (mockedMethodModel.getExceptionType() == null)
-            return mockedMethodModel.getReturnVal();
-        throw createThrowable(mockedMethodModel);
-    }
-
     private static boolean methodsMatch(Method m1, Method m2) {
         return m1.getName().equals(m2.getName()) &&
                 m1.getReturnType().equals(m2.getReturnType()) &&
@@ -166,12 +166,14 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
         return true;
     }
 
-    private static Throwable createThrowable(MockedMethodModel mockedMethodModel) {
+    public static Throwable createThrowable(MockedMethodModel mockedMethodModel) {
         try {
             Class<? extends Throwable> exceptionType = mockedMethodModel.getExceptionType();
             try {
                 return exceptionType.getDeclaredConstructor().newInstance();
-            } catch (Exception ignored) {}
+            } catch (Throwable e) {
+                log.error("Exception has occurred during throwable instantiation: ", e);
+            }
             Constructor constructor = exceptionType.getDeclaredConstructors()[0];
             Class<?>[] argumentTypes = constructor.getParameterTypes();
             Object[] values = new Object[argumentTypes.length];
