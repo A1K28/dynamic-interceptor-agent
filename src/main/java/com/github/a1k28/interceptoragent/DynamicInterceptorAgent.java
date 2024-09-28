@@ -1,13 +1,19 @@
 package com.github.a1k28.interceptoragent;
 
+import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.asm.Advice;
+import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.implementation.FixedValue;
+import net.bytebuddy.implementation.Implementation;
+import net.bytebuddy.implementation.StubMethod;
 import net.bytebuddy.implementation.bytecode.assign.Assigner;
 import net.bytebuddy.matcher.ElementMatchers;
 
 import java.lang.instrument.Instrumentation;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -27,13 +33,6 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
         INSTANCE = new DynamicInterceptorAgent();
         instrumentation = inst;
         new AgentBuilder.Default()
-//                .with(new AgentBuilder.Listener.Adapter() {
-//                    @Override
-//                    public void onError(String typeName, ClassLoader classLoader, JavaModule module, boolean loaded, Throwable throwable) {
-//                        System.err.println("Error transforming: " + typeName);
-//                        throwable.printStackTrace();
-//                    }
-//                })
                 .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)
                 .with(AgentBuilder.InitializationStrategy.NoOp.INSTANCE)
                 .type(ElementMatchers.any())
@@ -63,6 +62,19 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
             returnVal = createNullValue(method.getReturnType());
         }
 
+        String classname = method.getDeclaringClass().getName();
+        MockedMethodModel mockedMethodModel = new MockedMethodModel(method, returnVal, args);
+        classToMockedMethodMap.compute(classname, (k,v) -> {
+            if (v == null) v = new ArrayList<>();
+            v.add(mockedMethodModel);
+            return v;
+        });
+        retransformClass(classname);
+    }
+
+    @Override
+    public void mockMethodReturnStub(Method method, Object... args) {
+        Object returnVal = createStub(method.getReturnType());
         String classname = method.getDeclaringClass().getName();
         MockedMethodModel mockedMethodModel = new MockedMethodModel(method, returnVal, args);
         classToMockedMethodMap.compute(classname, (k,v) -> {
@@ -118,21 +130,6 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
         }
     }
 
-    private static void retransformClass(String className) {
-        if (instrumentation != null) {
-            try {
-                Class<?> clazz = Class.forName(className);
-                if (instrumentation.isModifiableClass(clazz)) {
-                    instrumentation.retransformClasses(clazz);
-                } else {
-                    log.error("Class is not modifiable to retransform: " + className);
-                }
-            } catch (Exception e) {
-                log.error("Cannot retransform class: ", e);
-            }
-        }
-    }
-
     public static Optional<MockedMethodModel> getMockedModelForInterception(
             Method method, Object[] args) {
         String classname = method.getDeclaringClass().getName();
@@ -145,25 +142,6 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
             }
         }
         return Optional.empty();
-    }
-
-    private static boolean methodsMatch(Method m1, Method m2) {
-        return m1.getName().equals(m2.getName()) &&
-                m1.getReturnType().equals(m2.getReturnType()) &&
-                Arrays.equals(m1.getParameterTypes(), m2.getParameterTypes());
-    }
-
-    private static boolean parametersMatch(Object[] args, MockedMethodModel mockedMethodModel) {
-        if (args == null ^ mockedMethodModel.getArgs() == null) return false;
-        if (args != null) {
-            for (int i = 0; i < args.length; i++) {
-                if (args[i] == null ^ mockedMethodModel.getArgs()[i] == null)
-                    return false;
-                if (args[i] != null && !args[i].equals(mockedMethodModel.getArgs()[i]))
-                    return false;
-            }
-        }
-        return true;
     }
 
     public static Throwable createThrowable(MockedMethodModel mockedMethodModel) {
@@ -181,9 +159,103 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
                 values[i] = createValue(argumentTypes[i]);
             }
             return (Throwable) constructor.newInstance(values);
-        } catch (Exception exception) {
-            log.error("Could not create an exception: ", exception);
-            return new RuntimeException();
+        } catch (Throwable e) {
+            log.error("Could not create an exception: ", e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static void retransformClass(String className) {
+        if (instrumentation != null) {
+            try {
+                Class<?> clazz = Class.forName(className);
+                if (instrumentation.isModifiableClass(clazz)) {
+                    instrumentation.retransformClasses(clazz);
+                } else {
+                    log.error("Class is not modifiable to retransform: " + className);
+                }
+            } catch (Exception e) {
+                log.error("Cannot retransform class: ", e);
+            }
+        }
+    }
+
+    private static boolean methodsMatch(Method m1, Method m2) {
+        return m1.getName().equals(m2.getName()) &&
+                m1.getReturnType().equals(m2.getReturnType()) &&
+                Arrays.equals(m1.getParameterTypes(), m2.getParameterTypes());
+    }
+
+    private static boolean parametersMatch(Object[] args, MockedMethodModel mockedMethodModel) {
+        if (args == null ^ mockedMethodModel.getArgs() == null) return false;
+        if (args != null) {
+            for (int i = 0; i < args.length; i++) {
+                if (args[i] == null ^ mockedMethodModel.getArgs()[i] == null)
+                    return false;
+                if (args[i] != null) {
+                    if (args[i] instanceof ArgumentType argumentType) {
+                        // TODO: match parameter
+//                        Class type = mockedMethodModel.getMethod().getParameterTypes()[i];
+                    } else if (!args[i].equals(mockedMethodModel.getArgs()[i])) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    public static <T> T createStub(Class<T> classToStub) {
+        DynamicType.Builder<? extends T> builder = new ByteBuddy()
+                .subclass(classToStub)
+                .name(classToStub.getName() + "Stub");
+
+        // For each method in the original class, override it with an empty implementation
+        for (Method method : classToStub.getDeclaredMethods()) {
+            if (!Modifier.isFinal(method.getModifiers()) && !Modifier.isPrivate(method.getModifiers())) {
+                builder = builder
+                        .visit(Advice.to(MethodAdvice.class)
+                        .on(isMethod().and(not(isConstructor()))));
+            }
+        }
+
+        // Create the stub class
+        Class<? extends T> stubClass = builder
+                .make()
+                .load(classToStub.getClassLoader())
+                .getLoaded();
+
+        try {
+            // Create an instance of the stub class
+            return stubClass.getDeclaredConstructor().newInstance();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static Implementation getImplementationForMethod(Method method) {
+        Class<?> returnType = method.getReturnType();
+
+        if (returnType.equals(void.class)) {
+            return StubMethod.INSTANCE;
+        } else if (returnType.equals(boolean.class)) {
+            return FixedValue.value(false);
+        } else if (returnType.equals(byte.class)) {
+            return FixedValue.value((byte) 0);
+        } else if (returnType.equals(short.class)) {
+            return FixedValue.value((short) 0);
+        } else if (returnType.equals(int.class)) {
+            return FixedValue.value(0);
+        } else if (returnType.equals(long.class)) {
+            return FixedValue.value(0L);
+        } else if (returnType.equals(float.class)) {
+            return FixedValue.value(0.0f);
+        } else if (returnType.equals(double.class)) {
+            return FixedValue.value(0.0d);
+        } else if (returnType.equals(char.class)) {
+            return FixedValue.value('\u0000');
+        } else {
+            return FixedValue.nullValue();
         }
     }
 
