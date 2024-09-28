@@ -73,8 +73,8 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
     }
 
     @Override
-    public void mockMethodReturnStub(Method method, Object... args) {
-        Object returnVal = createStub(method.getReturnType());
+    public void mockMethodReturnStub(Class clazz, Method method, Object... args) {
+        Object returnVal = createStub(clazz);
         String classname = method.getDeclaringClass().getName();
         MockedMethodModel mockedMethodModel = new MockedMethodModel(method, returnVal, args);
         classToMockedMethodMap.compute(classname, (k,v) -> {
@@ -206,6 +206,7 @@ public class DynamicInterceptorAgent implements InterceptorAPI {
     }
 
     public static <T> T createStub(Class<T> classToStub) {
+        log.agent("Creating Stub for: " + classToStub);
         DynamicType.Builder<? extends T> builder = new ByteBuddy()
                 .subclass(classToStub)
                 .name(classToStub.getName() + "Stub");
